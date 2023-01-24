@@ -308,6 +308,8 @@ class LpUnpack(object):
                     continue
 
             self.in_file_fd.seek(offset + header.header_size, 0)
+            if self.dump: 
+                break # read only Primary Metadata Header when dumping
 
         return header
 
