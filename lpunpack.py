@@ -1,6 +1,7 @@
 import re
 import sys
 import argparse
+import os
 from pathlib import Path
 from collections import namedtuple
 from struct import pack, unpack, calcsize
@@ -251,9 +252,12 @@ class LpUnpack(object):
     def __init__(self, **kwargs):
         self.partition_name = kwargs.get('NAME')
         self.slot_num = None
+        self.dump = kwargs.get('DUMP')
         # self.slot_num = int(kwargs.get('NUM')) if kwargs.get('NUM') else 0
         self.in_file_fd = open(kwargs.get('SUPER_IMAGE'), 'rb')
         self.out_dir = kwargs.get('OUTPUT_DIR')
+        if self.out_dir is None:  # use 'outdir' as default output directory if None specified
+            self.outdir = os.path.join(os.getcwd(), 'outdir')
 
     def _CheckOutDirExists(self):
         out_dir = Path(self.out_dir)
@@ -307,7 +311,12 @@ class LpUnpack(object):
 
         return header
 
+    def printd(self, d):
+        if self.dump:
+           print(d)
+
     def ReadMetadata(self):
+        self.printd('Slot 0:')
         metadata = Metadata()
         self.in_file_fd.seek(LP_PARTITION_RESERVED_BYTES, 0)
         metadata.geometry = self.ReadPrimaryGeometry()
@@ -325,6 +334,10 @@ class LpUnpack(object):
                    self.GetBackupMetadataOffset(metadata.geometry, slot_number=0)] #self.slot_num
 
         metadata.header = self.ParseHeaderMetadata(offsets)
+        self.printd(f'Metadata version: {metadata.header.major_version}.{metadata.header.minor_version}')
+        self.printd(f'Metadata size: {metadata.header.header_size + metadata.header.tables_size} bytes')
+        self.printd(f'Metadata max size: {metadata.geometry.metadata_max_size} bytes')
+        self.printd(f'Metadata slot count: {metadata.geometry.metadata_slot_count}')
 
         for index in range(0, metadata.header.partitions.num_entries):
             partition = LpMetadataPartition(self.in_file_fd.read(metadata.header.partitions.entry_size))
@@ -343,6 +356,25 @@ class LpUnpack(object):
             block_device = LpMetadataBlockDevice(self.in_file_fd.read(metadata.header.block_devices.entry_size))
             block_device.partition_name = str(block_device.partition_name, 'utf-8').strip('\x00')
             metadata.block_devices.append(block_device)
+
+        self.printd(f'Block device table:')
+        self.printd(f'------------------------')
+        self.printd(f'  Partition name: {metadata.block_devices[0].partition_name}')
+        self.printd(f'  First sector: {metadata.block_devices[0].first_logical_sector}')
+        self.printd(f'  Size: {metadata.block_devices[0].size} bytes')
+        self.printd(f'------------------------')
+
+        #self.printd(f'Super partition layout:')
+        #self.printd(f'------------------------')
+        #self.printd(f'super: ')
+        #self.printd(f'------------------------')
+
+        self.printd(f'Group table:')
+        self.printd(f'------------------------')
+        for index in range(0, metadata.header.groups.num_entries):
+            self.printd(f'  Name: {metadata.groups[index].name}')
+            self.printd(f'  Maximum size: {metadata.groups[index].maximum_size} bytes')
+            self.printd(f'------------------------')
 
         try:
             super_device = metadata.block_devices[0]
@@ -380,7 +412,12 @@ class LpUnpack(object):
     def Extract(self, partition, metadata):
         unpack_job = UnpackJob(name=partition.name, geometry=metadata.geometry)
 
+        self.printd(f'  Name: {partition.name}')
+        self.printd(f'  Group: {metadata.groups[partition.group_index].name}')
+        self.printd(f'  Extents:')
+
         if partition.num_extents != 0:
+            first_sector = 0
             for extent_number in range(partition.num_extents):
                 index = partition.first_extent_index + extent_number
                 extent = metadata.extents[index]
@@ -388,12 +425,21 @@ class LpUnpack(object):
                 if extent.target_type != LP_TARGET_TYPE_LINEAR:
                     raise LpUnpackError(f'Unsupported target type in extent: {extent.target_type}')
 
+                self.printd(f'    {first_sector} .. {first_sector + extent.num_sectors - 1} linear super {extent.target_data}')
+                first_sector += extent.num_sectors
+
                 offset = extent.target_data * LP_SECTOR_SIZE
                 size = extent.num_sectors * LP_SECTOR_SIZE
                 unpack_job.parts.append((offset, size))
+                self.printd(f'offset at {offset} byte, size is {size} bytes')
                 unpack_job.total_size += size
+        else:
+            self.printd('empty partition')
 
-        self.ExtractPartition(unpack_job)
+        self.printd(f'------------------------')
+
+        if not self.dump:
+            self.ExtractPartition(unpack_job)
 
     def unpack(self):
         try:
@@ -424,6 +470,10 @@ class LpUnpack(object):
                 if self.slot_num > metadata.geometry.metadata_slot_count:
                     raise LpUnpackError('Invalid metadata slot number: {}'.format(self.slot_num))
 
+            if self.dump:
+                self.printd(f'Partition table:')
+                self.printd(f'------------------------')
+
             for partition in metadata.partitions:
                 self.Extract(partition, metadata)
 
@@ -451,9 +501,18 @@ def create_parser():
         type=int,
         help=' !!! No implementation yet !!! Slot number (default is 0).'
     )
+    parser.add_argument(
+        '-d',
+        '--dump',
+        dest='DUMP',
+        action='store_true',
+        help=' lpdump.'
+    )
+
     parser.add_argument('SUPER_IMAGE')
     parser.add_argument(
         'OUTPUT_DIR',
+        nargs='?',
         type=str,
     )
     return parser
@@ -467,7 +526,7 @@ def help(parser):
 if __name__ == '__main__':
     parser = create_parser()
     namespace = parser.parse_args()
-    if len(sys.argv) >= 2:
+    if len(sys.argv) >= 1:
         if not Path(namespace.SUPER_IMAGE).exists():
             help(parser)
         LpUnpack(**vars(namespace)).unpack()
