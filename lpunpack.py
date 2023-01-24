@@ -257,7 +257,7 @@ class LpUnpack(object):
         self.in_file_fd = open(kwargs.get('SUPER_IMAGE'), 'rb')
         self.out_dir = kwargs.get('OUTPUT_DIR')
         if self.out_dir is None:  # use 'outdir' as default output directory if None specified
-            self.outdir = os.path.join(os.getcwd(), 'outdir')
+            self.out_dir = os.path.join(os.getcwd(), 'outdir')
 
     def _CheckOutDirExists(self):
         out_dir = Path(self.out_dir)
